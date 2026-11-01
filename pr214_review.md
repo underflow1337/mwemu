@@ -1,67 +1,67 @@
 # PR #214 — Review findings
 
-## ALTO: Deadlock en `registry_store::key_info()`
+## HIGH: Deadlock in `registry_store::key_info()`
 
-`subkeys()` toma el lock de `KEYS`, y luego `key_info` lo vuelve a tomar.
-`std::sync::Mutex` no es reentrant en Rust, asi que esto hara panic o deadlock
-la primera vez que se llame `RegQueryInfoKey`.
+`subkeys()` acquires the `KEYS` Mutex lock, then `key_info` tries to acquire
+it again. `std::sync::Mutex` is not reentrant in Rust, so this will panic or
+deadlock the first time `RegQueryInfoKey` is called.
 
-**Fix:** extraer los datos que necesita `key_info` en una sola toma del lock,
-o hacer que `subkeys()` reciba el guard ya tomado.
+**Fix:** extract all data `key_info` needs in a single lock acquisition, or
+have `subkeys()` accept an already-held guard.
 
 ```
 crates/libmwemu/src/api/windows/registry_store.rs
 ```
 
-## MEDIO: Orden de locks en `window_table::unregister_class`
+## MEDIUM: Lock ordering in `window_table::unregister_class`
 
-`unregister_class` toma `WINDOWS` y luego `CLASSES`.
-Si algun otro path (ej. `create_window` + `register_class`) los toma en orden
-inverso, hay deadlock.
+`unregister_class` acquires `WINDOWS` then `CLASSES`. If any other code path
+(e.g. `create_window` + `register_class`) acquires them in reverse order, a
+deadlock can occur.
 
-**Fix:** establecer un orden canonico (siempre CLASSES antes que WINDOWS, o al
-reves) y respetarlo en todos los call sites.
+**Fix:** establish a canonical lock order (always CLASSES before WINDOWS, or
+vice versa) and enforce it across all call sites.
 
 ```
 crates/libmwemu/src/api/windows/window_table.rs
 ```
 
-## BAJO: `--strict-api` y `--banzai` no son mutuamente excluyentes
+## LOW: `--strict-api` and `--banzai` are not mutually exclusive
 
-Ambos flags se pueden pasar a la vez. `--banzai` salta APIs no implementadas,
-`--strict-api` para ante ellas. Comportamiento ambiguo.
+Both flags can be passed at the same time. `--banzai` skips unimplemented APIs,
+`--strict-api` stops on them. Behavior is ambiguous when combined.
 
-**Fix:** validar en el CLI que no se pasen juntos, o documentar cual tiene
-prioridad.
+**Fix:** validate in the CLI that they cannot be used together, or document
+which one takes priority.
 
 ```
 crates/mwemu/src/main.rs
 crates/libmwemu/src/config.rs
 ```
 
-## BAJO: `virtual_protect::protect` cambia toda la region
+## LOW: `virtual_protect::protect` changes the entire region
 
-Cuando `[addr, addr+size)` cubre solo parte de una region mapeada, `protect()`
-modifica los permisos de TODA la region. Las regiones de mwemu pueden ser mucho
-mayores que una pagina de Windows (4 KB).
+When `[addr, addr+size)` covers only part of a mapped region, `protect()`
+modifies the permissions of the ENTIRE region. mwemu regions can be much larger
+than a Windows page (4 KB).
 
-**Fix:** considerar split de la region en el rango solicitado, o al menos
-documentar la limitacion.
+**Fix:** consider splitting the region at the requested range boundaries, or at
+least document the limitation.
 
 ```
 crates/libmwemu/src/api/windows/common/virtual_protect.rs
 ```
 
-## DISENO: Estado global (`lazy_static!`) en todos los stores
+## DESIGN: Global state (`lazy_static!`) in all stores
 
-`registry_store`, `environment_store`, `profile_store`, `crt_stdio` y
-`window_table` usan `lazy_static! { Mutex<...> }` como singletons.
+`registry_store`, `environment_store`, `profile_store`, `crt_stdio`, and
+`window_table` all use `lazy_static! { Mutex<...> }` as singletons.
 
-Esto impide tener multiples instancias de `Emu` en un mismo proceso (relevante
-para pymwemu). No es un bug ahora, pero limita la reutilizacion futura.
+This prevents running multiple `Emu` instances in the same process (relevant
+for pymwemu). Not a bug today, but limits future reusability.
 
-**Fix futuro:** mover el estado al struct `Emu` o a un `EmulationContext` que
-se pase por referencia.
+**Future fix:** move the state into the `Emu` struct or an `EmulationContext`
+passed by reference.
 
 ```
 crates/libmwemu/src/api/windows/registry_store.rs
